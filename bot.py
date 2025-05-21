@@ -1,78 +1,138 @@
 import os
-from flask import Flask, request
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, ContextTypes, CallbackQueryHandler
+from telegram import (
+    Update, InlineKeyboardButton, InlineKeyboardMarkup,
+    InputMediaPhoto
+)
+from telegram.ext import (
+    ApplicationBuilder, CommandHandler,
+    CallbackQueryHandler, ContextTypes
+)
 
-TOKEN = os.getenv("BOT_TOKEN")
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+# Токен бота
+BOT_TOKEN = os.getenv("BOT_TOKEN") or "8157933236:AAEzi5QzHTlh3FAvln82zAxeUH_d_D9PAmo"
 
-app = Flask(__name__)
-bot_app = Application.builder().token(TOKEN).build()
-
-# Зображення патернів (тимчасові посилання)
+# Дані навчання
 patterns = [
     {
-        "title": "Патерн: Голова і плечі",
-        "image_url": "https://www.investopedia.com/thmb/MaNjJ9XJQ7O1WkwHL1kSA8MccLQ=/1500x0/filters:no_upscale():max_bytes(150000):strip_icc()/headandshoulders1-5bfc69e4c9e77c00514e755b.png",
-        "description": "Цей патерн сигналізує про можливий розворот тренду зверху вниз."
+        "title": "Патерн «Голова і плечі»",
+        "description": "Цей патерн сигналізує про можливий розворот тренду зверху вниз.",
+        "image_url": "https://i.imgur.com/G6mnDFf.png"
     },
     {
-        "title": "Патерн: Подвійне дно",
-        "image_url": "https://www.investopedia.com/thmb/qYBvRTFLzKKzv1B2Xvd-VByrbRY=/1500x0/filters:no_upscale():max_bytes(150000):strip_icc()/doublebottom-5bfc69f846e0fb002602b0c0.png",
-        "description": "Цей патерн вказує на розворот тренду з низхідного на висхідний."
+        "title": "Патерн «Подвійна вершина»",
+        "description": "Формується після зростання, сигналізує про зміну на спад.",
+        "image_url": "https://i.imgur.com/7WOUtTk.png"
     }
 ]
 
+# Міні-тест
+quiz_questions = [
+    {
+        "question": "Який патерн сигналізує про зміну висхідного тренду на спадний?",
+        "options": ["Голова і плечі", "Флет", "Трикутник"],
+        "correct_index": 0
+    }
+]
+user_quiz_state = {}
+
+# Команда /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await send_step(update, context, 0)
+
+# Показ етапу навчання
+async def send_step(update_or_callback, context, step):
+    step = int(step)
+    pattern = patterns[step]
+    keyboard = []
+
+    if step > 0:
+        keyboard.append([InlineKeyboardButton("⬅️ Назад", callback_data=f"step_{step - 1}")])
+    if step < len(patterns) - 1:
+        keyboard.append([InlineKeyboardButton("➡️ Далі", callback_data=f"step_{step + 1}")])
+    else:
+        keyboard.append([InlineKeyboardButton("🧪 До тесту", callback_data="quiz")])
+
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    if hasattr(update_or_callback, "callback_query"):
+        await update_or_callback.callback_query.edit_message_media(
+            media=InputMediaPhoto(
+                media=pattern["image_url"],
+                caption=f"*{pattern['title']}*\n\n{pattern['description']}",
+                parse_mode="Markdown"
+            ),
+            reply_markup=reply_markup
+        )
+    else:
+        await update_or_callback.message.reply_photo(
+            photo=pattern["image_url"],
+            caption=f"*{pattern['title']}*\n\n{pattern['description']}",
+            parse_mode="Markdown",
+            reply_markup=reply_markup
+        )
+
+# Обробка кнопок
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    data = query.data
+
+    if data.startswith("step_"):
+        step = data.split("_")[1]
+        await send_step(update, context, step)
+    elif data == "quiz":
+        await start_quiz(update, context)
+    elif data.startswith("quiz_answer_"):
+        await handle_quiz_answer(update, context)
+
+# Почати тест
+async def start_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.callback_query.from_user.id
+    user_quiz_state[user_id] = 0
+    await send_quiz_question(update, context, user_id)
+
+# Надсилання питання
+async def send_quiz_question(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id):
+    q_index = user_quiz_state[user_id]
+    q = quiz_questions[q_index]
+
     keyboard = [
-        [InlineKeyboardButton("Почати навчання", callback_data="start_learning")],
-        [InlineKeyboardButton("Пройти тест", callback_data="start_quiz")]
+        [InlineKeyboardButton(opt, callback_data=f"quiz_answer_{i}")]
+        for i, opt in enumerate(q["options"])
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text("Вітаю! Оберіть дію:", reply_markup=reply_markup)
 
-async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
+    await update.callback_query.edit_message_text(
+        text=f"🧪 *Питання {q_index + 1}:*\n{q['question']}",
+        parse_mode="Markdown",
+        reply_markup=reply_markup
+    )
 
-    if query.data == "start_learning":
-        for p in patterns:
-            await query.message.reply_photo(photo=p["image_url"], caption=f"{p['title']}\n\n{p['description']}")
-        await query.message.reply_text("Це всі базові патерни. Хочеш перевірити свої знання?", reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("Так, тест", callback_data="start_quiz")]
-        ]))
-    elif query.data == "start_quiz":
-        keyboard = [
-            [InlineKeyboardButton("Розворот тренду", callback_data="quiz_correct")],
-            [InlineKeyboardButton("Продовження тренду", callback_data="quiz_wrong")]
-        ]
-        await query.message.reply_photo(
-            photo=patterns[0]["image_url"],
-            caption="Що означає цей патерн?",
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-    elif query.data == "quiz_correct":
-        await query.message.reply_text("Правильно!")
-    elif query.data == "quiz_wrong":
-        await query.message.reply_text("Неправильно. Це сигнал розвороту тренду.")
+# Обробка відповіді
+async def handle_quiz_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.callback_query.from_user.id
+    q_index = user_quiz_state.get(user_id, 0)
+    q = quiz_questions[q_index]
 
-bot_app.add_handler(CommandHandler("start", start))
-bot_app.add_handler(CallbackQueryHandler(handle_buttons))
+    selected = int(update.callback_query.data.split("_")[-1])
+    correct = q["correct_index"]
 
-@app.route("/", methods=["POST"])
-def webhook():
-    update = Update.de_json(request.get_json(force=True), bot_app.bot)
-    bot_app.update_queue.put_nowait(update)
-    return "OK"
+    if selected == correct:
+        response = "✅ Правильно!"
+    else:
+        response = f"❌ Неправильно. Правильна відповідь: {q['options'][correct]}"
 
-@app.route("/")
-def index():
-    return "Бот працює."
+    await update.callback_query.edit_message_text(
+        text=response + "\n\nНавчання завершено! Використай /start, щоб пройти ще раз.",
+        parse_mode="Markdown"
+    )
+    user_quiz_state.pop(user_id, None)
 
-async def set_webhook():
-    await bot_app.bot.set_webhook(f"{WEBHOOK_URL}")
+# Запуск бота
+def main():
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CallbackQueryHandler(button_handler))
+    app.run_polling()
 
 if __name__ == "__main__":
-    import asyncio
-    asyncio.run(set_webhook())
-    bot_app.run_polling()
+    main()
