@@ -1,155 +1,86 @@
 import os
-from telegram import (
-    Update, InlineKeyboardButton, InlineKeyboardMarkup,
-    InputMediaPhoto
-)
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, CallbackQueryHandler,
     ContextTypes
 )
-from telegram.constants import ParseMode
-from telegram.ext.webhookhandler import WebhookServer
 
-from flask import Flask, request
+TOKEN = os.getenv("BOT_TOKEN")
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # ← наприклад: https://your-app.onrender.com
 
-# Токен і URL
-BOT_TOKEN = os.getenv("BOT_TOKEN") or "8157933236:AAEzi5QzHTlh3FAvln82zAxeUH_d_D9PAmo"
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # Вставиш тут свій URL з Render
-
-app = Flask(__name__)
-
-# Дані
-patterns = [
-    {
-        "title": "Патерн «Голова і плечі»",
-        "description": "Сигнал розвороту зростаючого тренду вниз.",
-        "image_url": "https://i.imgur.com/G6mnDFf.png"
-    },
-    {
-        "title": "Патерн «Подвійна вершина»",
-        "description": "Формація, що передбачає спад тренду.",
-        "image_url": "https://i.imgur.com/7WOUtTk.png"
-    }
+lessons = [
+    {"title": "Патерн: Голова і плечі", "image": "https://example.com/head_shoulders.jpg"},
+    {"title": "Патерн: Подвійне дно", "image": "https://example.com/double_bottom.jpg"},
 ]
 
-quiz_questions = [
-    {
-        "question": "Який патерн сигналізує про зміну висхідного тренду?",
-        "options": ["Голова і плечі", "Флет", "Трикутник"],
-        "correct_index": 0
-    }
-]
-user_quiz_state = {}
+test_question = {
+    "question": "Що таке 'Голова і плечі'?",
+    "options": ["Сигнал до росту", "Сигнал до падіння", "Флет"],
+    "correct": 1
+}
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await send_step(update, context, 0)
-
-async def send_step(update_or_callback, context, step):
-    step = int(step)
-    pattern = patterns[step]
-    keyboard = []
-
-    if step > 0:
-        keyboard.append([InlineKeyboardButton("⬅️ Назад", callback_data=f"step_{step - 1}")])
-    if step < len(patterns) - 1:
-        keyboard.append([InlineKeyboardButton("➡️ Далі", callback_data=f"step_{step + 1}")])
-    else:
-        keyboard.append([InlineKeyboardButton("🧪 До тесту", callback_data="quiz")])
-
-    reply_markup = InlineKeyboardMarkup(keyboard)
-
-    if hasattr(update_or_callback, "callback_query"):
-        await update_or_callback.callback_query.edit_message_media(
-            media=InputMediaPhoto(
-                media=pattern["image_url"],
-                caption=f"*{pattern['title']}*\n\n{pattern['description']}",
-                parse_mode=ParseMode.MARKDOWN
-            ),
-            reply_markup=reply_markup
-        )
-    else:
-        await update_or_callback.message.reply_photo(
-            photo=pattern["image_url"],
-            caption=f"*{pattern['title']}*\n\n{pattern['description']}",
-            parse_mode=ParseMode.MARKDOWN,
-            reply_markup=reply_markup
-        )
+    keyboard = [
+        [InlineKeyboardButton("Почати навчання", callback_data="start_lessons")],
+        [InlineKeyboardButton("Пройти тест", callback_data="start_test")]
+    ]
+    await update.message.reply_text(
+        "Вітаю! Обери дію:", 
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    data = query.data
+    await query.answer()
 
-    if data.startswith("step_"):
-        step = data.split("_")[1]
-        await send_step(update, context, step)
-    elif data == "quiz":
-        await start_quiz(update, context)
-    elif data.startswith("quiz_answer_"):
-        await handle_quiz_answer(update, context)
+    if query.data == "start_lessons":
+        context.user_data["lesson_index"] = 0
+        await send_lesson(update, context)
+    elif query.data == "next_lesson":
+        context.user_data["lesson_index"] += 1
+        await send_lesson(update, context)
+    elif query.data == "start_test":
+        await send_test_question(update, context)
+    elif query.data.startswith("answer_"):
+        selected = int(query.data.split("_")[1])
+        if selected == test_question["correct"]:
+            await query.edit_message_text("Правильно!")
+        else:
+            await query.edit_message_text("Неправильно. Спробуй ще раз!")
 
-async def start_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.callback_query.from_user.id
-    user_quiz_state[user_id] = 0
-
-    try:
-        await update.callback_query.message.delete()
-    except Exception:
-        pass
-
-    await send_quiz_question(update, context, user_id)
-
-async def send_quiz_question(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id):
-    q_index = user_quiz_state[user_id]
-    q = quiz_questions[q_index]
-
-    keyboard = [
-        [InlineKeyboardButton(opt, callback_data=f"quiz_answer_{i}")]
-        for i, opt in enumerate(q["options"])
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-
-    await context.bot.send_message(
-        chat_id=update.callback_query.message.chat_id,
-        text=f"🧪 *Питання {q_index + 1}:*\n{q['question']}",
-        parse_mode="Markdown",
-        reply_markup=reply_markup
-    )
-
-async def handle_quiz_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.callback_query.from_user.id
-    q_index = user_quiz_state.get(user_id, 0)
-    q = quiz_questions[q_index]
-
-    selected = int(update.callback_query.data.split("_")[-1])
-    correct = q["correct_index"]
-
-    if selected == correct:
-        response = "✅ Правильно!"
+async def send_lesson(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    index = context.user_data.get("lesson_index", 0)
+    if index < len(lessons):
+        lesson = lessons[index]
+        keyboard = []
+        if index + 1 < len(lessons):
+            keyboard = [[InlineKeyboardButton("Далі", callback_data="next_lesson")]]
+        await update.callback_query.message.reply_photo(
+            photo=lesson["image"],
+            caption=lesson["title"],
+            reply_markup=InlineKeyboardMarkup(keyboard) if keyboard else None
+        )
     else:
-        response = f"❌ Неправильно. Правильна відповідь: {q['options'][correct]}"
+        await update.callback_query.message.reply_text("Це була остання тема!")
 
-    await update.callback_query.edit_message_text(
-        text=response + "\n\nНавчання завершено! Використай /start, щоб пройти ще раз.",
-        parse_mode="Markdown"
+async def send_test_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    buttons = [
+        [InlineKeyboardButton(option, callback_data=f"answer_{i}")]
+        for i, option in enumerate(test_question["options"])
+    ]
+    await update.callback_query.message.reply_text(
+        test_question["question"],
+        reply_markup=InlineKeyboardMarkup(buttons)
     )
-    user_quiz_state.pop(user_id, None)
-
-@app.route("/", methods=["GET"])
-def index():
-    return "Бот працює!"
-
-async def run_bot():
-    app_bot = ApplicationBuilder().token(BOT_TOKEN).build()
-    app_bot.add_handler(CommandHandler("start", start))
-    app_bot.add_handler(CallbackQueryHandler(button_handler))
-
-    await app_bot.initialize()
-    await app_bot.bot.set_webhook(url=WEBHOOK_URL)
-    await app_bot.start()
-    await app_bot.updater.start_polling()
-    return app_bot
 
 if __name__ == "__main__":
-    import asyncio
-    asyncio.run(run_bot())
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+    app = ApplicationBuilder().token(TOKEN).build()
+
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CallbackQueryHandler(button_handler))
+
+    app.run_webhook(
+        listen="0.0.0.0",
+        port=int(os.environ.get("PORT", 8443)),
+        webhook_url=WEBHOOK_URL
+        )
