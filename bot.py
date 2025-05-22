@@ -4,42 +4,46 @@ from telegram import (
     InputMediaPhoto
 )
 from telegram.ext import (
-    ApplicationBuilder, CommandHandler,
-    CallbackQueryHandler, ContextTypes
+    ApplicationBuilder, CommandHandler, CallbackQueryHandler,
+    ContextTypes
 )
+from telegram.constants import ParseMode
+from telegram.ext.webhookhandler import WebhookServer
 
-# Токен бота
+from flask import Flask, request
+
+# Токен і URL
 BOT_TOKEN = os.getenv("BOT_TOKEN") or "8157933236:AAEzi5QzHTlh3FAvln82zAxeUH_d_D9PAmo"
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # Вставиш тут свій URL з Render
 
-# Дані навчання
+app = Flask(__name__)
+
+# Дані
 patterns = [
     {
         "title": "Патерн «Голова і плечі»",
-        "description": "Цей патерн сигналізує про можливий розворот тренду зверху вниз.",
+        "description": "Сигнал розвороту зростаючого тренду вниз.",
         "image_url": "https://i.imgur.com/G6mnDFf.png"
     },
     {
         "title": "Патерн «Подвійна вершина»",
-        "description": "Формується після зростання, сигналізує про зміну на спад.",
+        "description": "Формація, що передбачає спад тренду.",
         "image_url": "https://i.imgur.com/7WOUtTk.png"
     }
 ]
 
-# Міні-тест
 quiz_questions = [
     {
-        "question": "Який патерн сигналізує про зміну висхідного тренду на спадний?",
+        "question": "Який патерн сигналізує про зміну висхідного тренду?",
         "options": ["Голова і плечі", "Флет", "Трикутник"],
         "correct_index": 0
     }
 ]
 user_quiz_state = {}
 
-# Команда /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await send_step(update, context, 0)
 
-# Показ етапу навчання
 async def send_step(update_or_callback, context, step):
     step = int(step)
     pattern = patterns[step]
@@ -59,7 +63,7 @@ async def send_step(update_or_callback, context, step):
             media=InputMediaPhoto(
                 media=pattern["image_url"],
                 caption=f"*{pattern['title']}*\n\n{pattern['description']}",
-                parse_mode="Markdown"
+                parse_mode=ParseMode.MARKDOWN
             ),
             reply_markup=reply_markup
         )
@@ -67,11 +71,10 @@ async def send_step(update_or_callback, context, step):
         await update_or_callback.message.reply_photo(
             photo=pattern["image_url"],
             caption=f"*{pattern['title']}*\n\n{pattern['description']}",
-            parse_mode="Markdown",
+            parse_mode=ParseMode.MARKDOWN,
             reply_markup=reply_markup
         )
 
-# Обробка кнопок
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     data = query.data
@@ -84,7 +87,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data.startswith("quiz_answer_"):
         await handle_quiz_answer(update, context)
 
-# Почати тест
 async def start_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.callback_query.from_user.id
     user_quiz_state[user_id] = 0
@@ -96,7 +98,6 @@ async def start_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await send_quiz_question(update, context, user_id)
 
-# Надсилання питання
 async def send_quiz_question(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id):
     q_index = user_quiz_state[user_id]
     q = quiz_questions[q_index]
@@ -114,7 +115,6 @@ async def send_quiz_question(update: Update, context: ContextTypes.DEFAULT_TYPE,
         reply_markup=reply_markup
     )
 
-# Обробка відповіді
 async def handle_quiz_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.callback_query.from_user.id
     q_index = user_quiz_state.get(user_id, 0)
@@ -134,12 +134,22 @@ async def handle_quiz_answer(update: Update, context: ContextTypes.DEFAULT_TYPE)
     )
     user_quiz_state.pop(user_id, None)
 
-# Запуск бота
-def main():
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CallbackQueryHandler(button_handler))
-    app.run_polling()
+@app.route("/", methods=["GET"])
+def index():
+    return "Бот працює!"
+
+async def run_bot():
+    app_bot = ApplicationBuilder().token(BOT_TOKEN).build()
+    app_bot.add_handler(CommandHandler("start", start))
+    app_bot.add_handler(CallbackQueryHandler(button_handler))
+
+    await app_bot.initialize()
+    await app_bot.bot.set_webhook(url=WEBHOOK_URL)
+    await app_bot.start()
+    await app_bot.updater.start_polling()
+    return app_bot
 
 if __name__ == "__main__":
-    main()
+    import asyncio
+    asyncio.run(run_bot())
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
